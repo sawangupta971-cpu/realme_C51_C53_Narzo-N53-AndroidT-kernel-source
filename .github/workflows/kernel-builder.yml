@@ -80,6 +80,19 @@ jobs:
           ccache --zero-stats
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
+      - name: Remove hybridswap from zram build
+        working-directory: kernel
+        run: |
+          echo "===== zram Makefile (before) ====="
+          cat drivers/block/zram/Makefile
+          echo "===== hybridswap mentions ====="
+          grep -rn -i "hybridswap" drivers/block/zram/Makefile drivers/block/zram/Kconfig || true
+
+          sed -i '/hybridswap/I s/^/# disabled: /' drivers/block/zram/Makefile
+
+          echo "===== zram Makefile (after) ====="
+          cat drivers/block/zram/Makefile
+
       - name: Generate defconfig
         working-directory: kernel
         run: |
@@ -88,26 +101,6 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCFLAGS="-fcommon -Wno-error" \
             sprd_sharkl5Pro_defconfig
-
-      - name: Disable broken hybridswap (zram) options
-        working-directory: kernel
-        run: |
-          echo "===== hybridswap related lines in Makefile/Kconfig ====="
-          grep -rn -i "hybridswap" drivers/block/zram/Makefile drivers/block/zram/Kconfig 2>/dev/null || true
-          echo "===== hybridswap options in .config (before) ====="
-          grep -i "hybridswap" out/.config || true
-
-          for OPT in HYBRIDSWAP HYBRIDSWAP_SWAPD HYBRIDSWAP_CORE HYBRIDSWAP_ASYNC_COMPRESS ZRAM_WRITEBACK_HYBRIDSWAP; do
-            scripts/config --file out/.config --disable "$OPT"
-          done
-
-          make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            olddefconfig
-
-          echo "===== hybridswap options in .config (after) ====="
-          grep -i "hybridswap" out/.config || echo "none enabled"
 
       - name: Build kernel
         working-directory: kernel
