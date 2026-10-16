@@ -83,15 +83,20 @@ jobs:
       - name: Remove hybridswap from zram build
         working-directory: kernel
         run: |
-          echo "===== zram Makefile (before) ====="
-          cat drivers/block/zram/Makefile
-          echo "===== hybridswap mentions ====="
-          grep -rn -i "hybridswap" drivers/block/zram/Makefile drivers/block/zram/Kconfig || true
-
           sed -i '/hybridswap/I s/^/# disabled: /' drivers/block/zram/Makefile
-
-          echo "===== zram Makefile (after) ====="
           cat drivers/block/zram/Makefile
+
+      - name: Remove -Werror from all kernel Makefiles
+        working-directory: kernel
+        run: |
+          echo "===== Files with -Werror (before) ====="
+          grep -rlE -- "-Werror" --include="Makefile*" --include="Kbuild" --include="*.mk" . | head -n 50 || true
+
+          find . \( -name 'Makefile*' -o -name 'Kbuild' -o -name '*.mk' \) -type f \
+            -exec sed -i -E 's/-Werror(=[A-Za-z0-9_+-]+)?( |$)/\2/g' {} +
+
+          echo "===== Files with -Werror (after) ====="
+          grep -rnE -- "-Werror( |=|$)" --include="Makefile*" --include="Kbuild" --include="*.mk" . | head -n 20 || echo "none left"
 
       - name: Generate defconfig
         working-directory: kernel
@@ -113,7 +118,7 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             HOSTCFLAGS="-fcommon -Wno-error"
-            KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-misleading-indentation -fcommon"
+            KCFLAGS="-Wno-error -Wno-strict-prototypes -Wno-unused-but-set-variable -Wno-misleading-indentation -fcommon"
           )
 
           set +e
