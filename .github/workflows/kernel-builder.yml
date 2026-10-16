@@ -2,15 +2,10 @@ name: Build Realme C51 Kernel (Unisoc T612)
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_repo:
-        description: "Kernel source repository URL"
-        required: true
-        default: "https://github.com/YOUR_USER/YOUR_KERNEL_REPO"
-      kernel_branch:
-        description: "Kernel source branch"
-        required: true
-        default: "main"
+  push:
+    branches:
+      - main
+      - master
 
 env:
   ARCH: arm64
@@ -21,16 +16,21 @@ env:
   CROSS_COMPILE_ARM32: arm-linux-gnueabi-
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
-      - name: Checkout workflow repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           path: kernel
+          fetch-depth: 1
 
       - name: Free up disk space
         run: |
@@ -81,25 +81,39 @@ jobs:
         run: |
           ccache --max-size=5G
           ccache --zero-stats
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
       - name: Generate defconfig
         working-directory: kernel
         run: |
-          make O=out ARCH=${ARCH} SUBARCH=${SUBARCH} \
-            CROSS_COMPILE=${CROSS_COMPILE} \
-            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
-            CC="ccache aarch64-linux-gnu-gcc" \
-            ${DEFCONFIG}
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCFLAGS="-fcommon" \
+            sprd_sharkl5Pro_defconfig
 
       - name: Build kernel
         working-directory: kernel
         run: |
+          set -o pipefail
           make -j$(nproc --all) O=out \
-            ARCH=${ARCH} SUBARCH=${SUBARCH} HEADER_ARCH=${HEADER_ARCH} \
-            CROSS_COMPILE=${CROSS_COMPILE} \
-            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
-            CC="ccache aarch64-linux-gnu-gcc" \
-            Image.gz-dtb 2>&1 | tee build.log
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            HEADER_ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCFLAGS="-fcommon" \
+            KCFLAGS="-Wno-error -fcommon" \
+            2>&1 | tee build.log
+
+      - name: Show last errors (if build failed)
+        if: failure()
+        working-directory: kernel
+        run: |
+          echo "===== Error lines ====="
+          grep -nE "error:|Error [0-9]+|\*\*\*" build.log | tail -n 40 || true
+          echo "===== Last 40 lines ====="
+          tail -n 40 build.log || true
 
       - name: Show ccache stats
         if: always()
