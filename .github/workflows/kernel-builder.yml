@@ -11,9 +11,6 @@ env:
   ARCH: arm64
   SUBARCH: arm64
   HEADER_ARCH: arm64
-  DEFCONFIG: sprd_sharkl5Pro_defconfig
-  CROSS_COMPILE: aarch64-linux-gnu-
-  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 defaults:
@@ -22,8 +19,8 @@ defaults:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -60,13 +57,13 @@ jobs:
             glibc-source \
             clang \
             lld \
-            llvm
+            llvm \
+            python3 \
+            cpio
 
       - name: Verify toolchains
         run: |
-          which aarch64-linux-gnu-gcc
           aarch64-linux-gnu-gcc --version
-          which arm-linux-gnueabi-gcc
           arm-linux-gnueabi-gcc --version
 
       - name: Restore ccache
@@ -89,31 +86,46 @@ jobs:
           make O=out ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCFLAGS="-fcommon" \
+            HOSTCFLAGS="-fcommon -Wno-error" \
             sprd_sharkl5Pro_defconfig
 
       - name: Build kernel
         working-directory: kernel
         run: |
-          set -o pipefail
-          make -j$(nproc --all) O=out \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            HEADER_ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCFLAGS="-fcommon" \
-            KCFLAGS="-Wno-error -fcommon" \
-            2>&1 | tee build.log
+          ARGS=(
+            O=out
+            ARCH=arm64
+            SUBARCH=arm64
+            HEADER_ARCH=arm64
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            HOSTCFLAGS="-fcommon -Wno-error"
+            KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-misleading-indentation -fcommon"
+          )
 
-      - name: Show last errors (if build failed)
+          set +e
+          make -j"$(nproc --all)" "${ARGS[@]}" 2>&1 | tee build.log
+          STATUS=${PIPESTATUS[0]}
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "=============================================="
+            echo "Parallel build failed. Re-running with -j1 to"
+            echo "show the real error at the end of the log."
+            echo "=============================================="
+            make -j1 "${ARGS[@]}" 2>&1 | tee -a build.log
+            STATUS=${PIPESTATUS[0]}
+          fi
+
+          exit "$STATUS"
+
+      - name: Show real errors (if build failed)
         if: failure()
         working-directory: kernel
         run: |
-          echo "===== Error lines ====="
-          grep -nE "error:|Error [0-9]+|\*\*\*" build.log | tail -n 40 || true
-          echo "===== Last 40 lines ====="
-          tail -n 40 build.log || true
+          echo "===== Lines containing errors ====="
+          grep -nE "error:|fatal error|undefined reference|No such file|\*\*\* \[" build.log | head -n 30 || true
+          echo "===== Last 60 lines ====="
+          tail -n 60 build.log || true
 
       - name: Show ccache stats
         if: always()
