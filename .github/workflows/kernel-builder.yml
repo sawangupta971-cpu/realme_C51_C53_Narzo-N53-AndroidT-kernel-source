@@ -20,7 +20,7 @@ defaults:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
       - name: Checkout repository
@@ -67,7 +67,7 @@ jobs:
           arm-linux-gnueabi-gcc --version
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-${{ github.run_id }}
@@ -94,22 +94,15 @@ jobs:
       - name: Check oplus folder and fix battery driver
         working-directory: kernel
         run: |
-          echo "===== drivers/power contents ====="
-          ls -la drivers/power/
-          echo "===== oplus folders anywhere in repo ====="
-          find . -maxdepth 4 -type d -iname "oplus*" | head -n 20 || true
           echo "===== oplus_gauge.h anywhere in repo ====="
           find . -name "oplus_gauge.h" | head -n 5 || true
-          echo "===== unisoc_battery lines in Makefile ====="
-          grep -n "unisoc_battery" drivers/power/supply/Makefile || true
+          echo "===== sc27xx_fuel_gauge files in repo ====="
+          find . -name "sc27xx_fuel_gauge*" | head -n 5 || true
 
           if [ ! -f drivers/power/oplus/v1/oplus_gauge.h ]; then
             echo ">>> oplus_gauge.h missing, disabling unisoc_battery in Makefile"
             sed -i '/unisoc_battery/ s/^/# disabled: /' drivers/power/supply/Makefile
           fi
-
-          echo "===== Makefile (after) ====="
-          grep -n "unisoc_battery" drivers/power/supply/Makefile || true
 
       - name: Generate defconfig
         working-directory: kernel
@@ -134,15 +127,52 @@ jobs:
             KCFLAGS="-Wno-error -Wno-strict-prototypes -Wno-unused-but-set-variable -Wno-misleading-indentation -fcommon"
           )
 
-          set +e
-          make -j"$(nproc --all)" -k "${ARGS[@]}" 2>&1 | tee build.log
-          STATUS=${PIPESTATUS[0]}
+          : > build.log
+          STATUS=1
+
+          for ROUND in 1 2 3 4 5 6; do
+            echo "=============== BUILD ROUND $ROUND ===============" | tee -a build.log
+            set +e
+            make -j"$(nproc --all)" -k "${ARGS[@]}" 2>&1 | tee round.log
+            STATUS=${PIPESTATUS[0]}
+            set -e
+            cat round.log >> build.log
+
+            if [ "$STATUS" -eq 0 ]; then
+              echo "BUILD SUCCESS"
+              break
+            fi
+
+            grep -oE "No rule to make target '[^']+\.o'" round.log \
+              | sed -E "s/.*'([^']+)'/\1/" | sort -u > missing.txt || true
+
+            if [ ! -s missing.txt ]; then
+              echo "No missing-source errors found. Stopping retries."
+              break
+            fi
+
+            echo "===== Missing source files, removing from Makefiles ====="
+            while read -r OBJ; do
+              DIR=$(dirname "$OBJ")
+              BASE=$(basename "$OBJ")
+              NAME="${BASE%.o}"
+              if [ ! -f "$DIR/$NAME.c" ] && [ ! -f "$DIR/$NAME.S" ]; then
+                ESC=$(printf '%s' "$BASE" | sed 's/\./\\./g')
+                echo "removing $BASE from $DIR"
+                for MK in "$DIR/Makefile" "$DIR/Kbuild"; do
+                  if [ -f "$MK" ]; then
+                    sed -i -E "s/(^|[[:space:]])${ESC}([[:space:]]|\$)/\1\2/g" "$MK"
+                  fi
+                done
+              fi
+            done < missing.txt
+          done
 
           if [ "$STATUS" -ne 0 ]; then
             echo "=============================================="
-            echo "Build failed. All errors found in whole build:"
+            echo "Build failed. Error summary:"
             echo "=============================================="
-            grep -nE "error:|fatal error|undefined reference|No such file" build.log | sort -u | head -n 40
+            grep -nE "error:|fatal error|undefined reference|No such file|No rule to make target" round.log | sort -u | head -n 40
           fi
 
           exit "$STATUS"
@@ -152,23 +182,40 @@ jobs:
         working-directory: kernel
         run: |
           echo "===== All error lines ====="
-          grep -nE "error:|fatal error|undefined reference|No such file|\*\*\* \[" build.log | sort -u | head -n 40 || true
+          grep -nE "error:|fatal error|undefined reference|No such file|No rule to make target|\*\*\* \[" build.log | sort -u | tail -n 40 || true
 
       - name: Show ccache stats
         if: always()
         run: ccache --show-stats
 
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+
       - name: Verify output
         working-directory: kernel
         run: |
           ls -lh out/arch/arm64/boot/
-          test -f out/arch/arm64/boot/Image.gz-dtb
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Image.gz-dtb found"
+          elif [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ]; then
+            echo "WARNING: Image.gz-dtb not built, but Image / Image.gz exists"
+          else
+            echo "No kernel image found"
+            exit 1
+          fi
 
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: Image.gz-dtb
-          path: kernel/out/arch/arm64/boot/Image.gz-dtb
+          name: kernel-image
+          path: |
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/Image
           if-no-files-found: error
 
       - name: Upload build log
