@@ -1,0 +1,35 @@
+name: Kernel Builder - Realme C51
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v3
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev libelf-dev zlib1g-dev ccache zip glibc-source clang lld llvm
+
+    - name: Set Environment Variables
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "HEADER_ARCH=arm64" >> $GITHUB_ENV
+
+    - name: Build Kernel Image
+      run: |
+        mkdir -p out
+        make O=out ARCH=arm64 sprd_sharkl5Pro_defconfig
+        make -j$(nproc --all) O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+    - name: Upload Kernel Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: Image.gz-dtb
+        path: out/arch/arm64/boot/Image.gz-dtb
