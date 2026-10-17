@@ -1,4 +1,4 @@
-name: Build Realme C51 Kernel (Unisoc T612)
+name: Build Realme C51 Kernel (NetHunter-ready)
 
 on:
   workflow_dispatch:
@@ -94,11 +94,6 @@ jobs:
       - name: Check oplus folder and fix battery driver
         working-directory: kernel
         run: |
-          echo "===== oplus_gauge.h anywhere in repo ====="
-          find . -name "oplus_gauge.h" | head -n 5 || true
-          echo "===== sc27xx_fuel_gauge files in repo ====="
-          find . -name "sc27xx_fuel_gauge*" | head -n 5 || true
-
           if [ ! -f drivers/power/oplus/v1/oplus_gauge.h ]; then
             echo ">>> oplus_gauge.h missing, disabling unisoc_battery in Makefile"
             sed -i '/unisoc_battery/ s/^/# disabled: /' drivers/power/supply/Makefile
@@ -113,7 +108,58 @@ jobs:
             HOSTCFLAGS="-fcommon -Wno-error" \
             sprd_sharkl5Pro_defconfig
 
-      - name: Build kernel
+      - name: Enable NetHunter kernel options
+        working-directory: kernel
+        run: |
+          OPTS=(
+            # Wireless framework (NOT monitor mode on built-in chip — see notes)
+            CFG80211
+            CFG80211_INTERNAL_REGDB
+            MAC80211
+            MAC80211_RC_MINSTREL
+            MAC80211_RC_DEFAULT_MINSTREL
+            # USB gadget / HID (BadUSB, Rubber Ducky style attacks)
+            USB_GADGET
+            USB_CONFIGFS
+            USB_CONFIGFS_SERIAL
+            USB_CONFIGFS_ACM
+            USB_CONFIGFS_OBEX
+            USB_CONFIGFS_NCM
+            USB_CONFIGFS_ECM
+            USB_CONFIGFS_EEM
+            USB_CONFIGFS_MASS_STORAGE
+            USB_CONFIGFS_F_FS
+            USB_CONFIGFS_F_HID
+            USB_CONFIGFS_F_PRINTER
+            USB_LIBCOMPOSITE
+            USB_F_HID
+            USB_F_MASS_STORAGE
+            HID
+            # Netfilter / MITM tooling
+            NETFILTER
+            NETFILTER_ADVANCED
+            NETFILTER_XTABLES
+            IP_NF_IPTABLES
+            IP_NF_FILTER
+            IP_NF_MANGLE
+            IP_NF_NAT
+            NF_CONNTRACK
+            NF_NAT
+          )
+
+          for OPT in "${OPTS[@]}"; do
+            scripts/config --file out/.config --enable "$OPT" 2>/dev/null || true
+          done
+
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            olddefconfig
+
+          echo "===== Final state of key options ====="
+          grep -E "CONFIG_(CFG80211|MAC80211|USB_GADGET|USB_CONFIGFS_F_HID|HID|NETFILTER)[^_]" out/.config || true
+
+      - name: Build kernel (Image.gz-dtb only, skip loadable modules)
         working-directory: kernel
         run: |
           ARGS=(
@@ -130,10 +176,10 @@ jobs:
           : > build.log
           STATUS=1
 
-          for ROUND in 1 2 3 4 5 6; do
+          for ROUND in 1 2 3 4 5 6 7 8; do
             echo "=============== BUILD ROUND $ROUND ===============" | tee -a build.log
             set +e
-            make -j"$(nproc --all)" -k "${ARGS[@]}" 2>&1 | tee round.log
+            make -j"$(nproc --all)" -k "${ARGS[@]}" Image.gz-dtb 2>&1 | tee round.log
             STATUS=${PIPESTATUS[0]}
             set -e
             cat round.log >> build.log
@@ -181,7 +227,6 @@ jobs:
         if: failure()
         working-directory: kernel
         run: |
-          echo "===== All error lines ====="
           grep -nE "error:|fatal error|undefined reference|No such file|No rule to make target|\*\*\* \[" build.log | sort -u | tail -n 40 || true
 
       - name: Show ccache stats
@@ -199,23 +244,13 @@ jobs:
         working-directory: kernel
         run: |
           ls -lh out/arch/arm64/boot/
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Image.gz-dtb found"
-          elif [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ]; then
-            echo "WARNING: Image.gz-dtb not built, but Image / Image.gz exists"
-          else
-            echo "No kernel image found"
-            exit 1
-          fi
+          test -f out/arch/arm64/boot/Image.gz-dtb
 
       - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel/out/arch/arm64/boot/Image.gz
-            kernel/out/arch/arm64/boot/Image
+          name: Image.gz-dtb
+          path: kernel/out/arch/arm64/boot/Image.gz-dtb
           if-no-files-found: error
 
       - name: Upload build log
